@@ -7,7 +7,7 @@ Predict NFL game outcomes (score margin, team points, and win probability) for r
 - Pre-game predictions at the individual game level (Weeks 1–18) for seasons **2020–2024**.
 - Feature engineering from play-by-play → team-week aggregates with **opponent adjustments**, **home field**, **situational efficiency** (down/distance/field position), **rolling** and **EWMA** form.
 - Separate models for **home points** and **away points**; score margin is the difference; **win probability** via Skellam using the two predicted means.
-- Reproducible pipeline with **Makefile** and CLI (`typer`) commands.
+- Reproducible pipeline with **batch**, **Makefile**, **Docker**, and CLI (`typer`) commands.
 
 > This repo favors clarity and reproducibility over leaderboard-chasing.
 
@@ -26,6 +26,10 @@ pip install -r requirements.txt
 make all
 # or
 python -m src.cli build-all
+
+# or using bash commands
+ bash build_models.sh
+
 ```
 
 Data artifacts land in:
