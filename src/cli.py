@@ -31,15 +31,13 @@ def build_features():
 
 
 @app.command()
-def predict(poisson: bool = True):
+def predict():
     """Generates predictions for NFL games using the trained model.
 
     This command runs the prediction pipeline and outputs the number of games predicted.
 
-    Args:
-        poisson (bool): If True, uses Poisson regression objective; otherwise uses squared error regression.
     """
-    preds, _ = run_models(poisson=poisson)
+    preds, _ = run_models()
     print(f"[green]Predicted {len(preds)} games[/green]")
 
 
@@ -50,17 +48,15 @@ def evaluate():
 
 
 @app.command("build-all")
-def build_all(poisson: bool = True):
+def build_all():
     """Runs the full pipeline to ingest data, build features, train, predict, and generate a report.
 
     This command executes all steps in the NFL game outcomes pipeline for the specified seasons.
 
-    Args:
-        poisson (bool): If True, uses Poisson regression objective; otherwise uses squared error regression.
     """
     ingest_fn([2020, 2021, 2022, 2023, 2024])
     build_game_features()
-    run_models(poisson=poisson)
+    run_models()
     make_report()
 
 

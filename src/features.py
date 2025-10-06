@@ -3,11 +3,19 @@ from __future__ import annotations
 import os
 from typing import List
 
+import logging
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from rich import print
 
-from src.utils.common import bin_yardline_100, bin_ydstogo
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+from src.utils.common import bin_yardline_100, bin_ydstogo, safe_div
+
+
+
 
 RAW_DIR = os.path.join("data", "raw")
 FEAT_DIR = os.path.join("data", "features")
@@ -128,7 +136,7 @@ def _team_week_offense(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
         .rename(columns={"posteam": "team"})
     )
-    off["pass_rate"] = off["pass_plays"] / off["plays"].replace(0, np.nan)
+    off["pass_rate"] = off["pass_plays"] / off["plays"].replace(0.0, np.nan)
     return off
 
 
@@ -162,7 +170,7 @@ def _team_week_defense(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
         .rename(columns={"defteam": "team"})
     )
-    deff["pass_rate_def"] = deff["pass_plays_def"] / deff["plays_def"].replace(0, np.nan)
+    deff["pass_rate_def"] = deff["pass_plays_def"] / deff["plays_def"].replace(0.0, np.nan)
     return deff
 
 
@@ -212,6 +220,81 @@ def _cume_prior_to_week(df: pd.DataFrame, value_cols: list[str]) -> pd.DataFrame
         out.append(g)
     return pd.concat(out, ignore_index=True)
 
+def _auto_correlation_selection(df: pd.DataFrame, min_correlation_cutoff: float, max_features: int) -> pd.DataFrame:
+    """Selects features based on their correlation with the target variables.
+
+    This function computes the absolute correlation of each numeric feature with the home and away scores,
+    selects features that meet the minimum correlation cutoff, and limits the number of features to the specified maximum.
+
+    Args:
+        df (pd.DataFrame): The input DataFrame containing game features and scores.
+        min_correlation_cutoff (float): Minimum absolute correlation required to include a feature.
+        max_features (int): Maximum number of features to select based on correlation.
+
+    Returns:
+        pd.DataFrame: A DataFrame containing only the selected features and target variables.
+    """
+    y_home = df["home_score"]
+    y_away = df["away_score"]
+    drop_cols = ["season", "week", "home_score", "away_score", "game_id", "home_team", "away_team", "game_type"]
+    X = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
+    X = X.select_dtypes(include=[np.number])
+
+    # Filter out columns with zero variance to avoid division by zero in correlation calculation
+    X = X.loc[:, X.std() > 0]
+
+    corrs_home = X.apply(lambda x: x.corr(y_home)).abs()
+    corrs_away = X.apply(lambda x: x.corr(y_away)).abs()
+    corrs = pd.DataFrame({"feature": X.columns, "corr_home": corrs_home, "corr_away": corrs_away})
+    corrs["max_corr"] = corrs[["corr_home", "corr_away"]].max(axis=1)
+    selected_features = (
+        corrs[corrs["max_corr"] >= min_correlation_cutoff]
+        .sort_values("max_corr", ascending=False)
+        .head(max_features)["feature"]
+        .tolist()
+    )
+
+    selected_cols = selected_features + ["home_score", "away_score"]
+    return df[selected_cols], corrs
+
+
+def plot_feature_correlations(corrs: pd.DataFrame) -> None:
+    """Plots feature correlations with the target variables.
+
+    This function creates a bar plot for the absolute correlations of each feature with the home and away scores.
+
+    Args:
+        corrs (pd.DataFrame): DataFrame containing feature correlations.
+    """
+    plt.figure(figsize=(15, 6))
+    plt.bar(corrs["feature"], corrs["max_corr"], color="skyblue")
+    plt.axhline(y=0.35, color="r", linestyle="--", label="Min Correlation Cutoff")
+    plt.title("Feature Correlations with Target Variables")
+    plt.xlabel("Features")
+    plt.ylabel("Absolute Correlation")
+    plt.xticks(rotation=45)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("reports/feature_correlations.png")
+
+
+def plot_feature_correlations_heatmap(corrs: pd.DataFrame) -> None:
+    """Plots a heatmap of feature correlations.
+
+    This function creates a heatmap to visualize the correlation matrix of the features.
+
+    Args:
+        corrs (pd.DataFrame): DataFrame containing feature correlations.
+    """
+    import seaborn as sns
+
+    plt.figure(figsize=(14, 10))
+    corr_matrix = corrs.set_index('feature')[['corr_home', 'corr_away']]
+    sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', cbar_kws={'label': 'Correlation'})
+    plt.title("Feature Correlation Heatmap")
+    plt.tight_layout()
+    plt.savefig("reports/feature_correlation_heatmap.png")
+
 
 def build_game_features(min_plays_team_week: int = 20) -> pd.DataFrame:
     """Builds and saves engineered features for each NFL game.
@@ -234,11 +317,15 @@ def build_game_features(min_plays_team_week: int = 20) -> pd.DataFrame:
     deff = deff.loc[deff["plays_def"] >= min_plays_team_week].copy()
 
     off = _merge_expected_pass(off, df, exp_tbl)
-
+    # Columns to compute priors for
     off_cols = ["epa_per_play", "pass_epa", "rush_epa", "pass_rate", "proe", "rroe"]
     deff_cols = ["epa_per_play_def", "pass_epa_def", "rush_epa_def", "pass_rate_def"]
     off_prior = _cume_prior_to_week(off, off_cols)
     deff_prior = _cume_prior_to_week(deff, deff_cols)
+    # rename columns to remove _def suffix for defense
+
+    deff_prior = deff_prior.rename(columns={c: c.replace("_def", "") for c in deff_cols})
+
 
     sched_cols = ["season", "week", "home_team", "away_team", "home_score", "away_score", "game_type", "game_id"]
     sk = sched[sched_cols].copy()
@@ -276,10 +363,11 @@ def build_game_features(min_plays_team_week: int = 20) -> pd.DataFrame:
     out = []
     for season, g in gf.groupby("season"):
         num_cols = g.select_dtypes(include=[np.number]).columns.tolist()
-        means = g[num_cols].mean(numeric_only=True)
+        means = g[num_cols].mean(numeric_only=True,)
         g[num_cols] = g[num_cols].fillna(means)
         out.append(g)
     gf = pd.concat(out, ignore_index=True)
+    slim_gf, corrs = _auto_correlation_selection(gf, min_correlation_cutoff=0.35, max_features=5)
 
     os.makedirs(FEAT_DIR, exist_ok=True)
 
@@ -287,5 +375,12 @@ def build_game_features(min_plays_team_week: int = 20) -> pd.DataFrame:
     exp_tbl.to_parquet(os.path.join(FEAT_DIR, "expected_pass_table.parquet"))
     gf.to_parquet(os.path.join(FEAT_DIR, "game_features.parquet"))
     gf.to_csv(os.path.join(FEAT_DIR, "game_features.csv"), index=False)
+    slim_gf.to_parquet(os.path.join(FEAT_DIR, "game_features_slim.parquet"))
+    slim_gf.to_csv(os.path.join(FEAT_DIR, "game_features_slim.csv"), index=False)
+    corrs.to_parquet(os.path.join(FEAT_DIR, "feature_correlations.parquet"))
+    corrs.to_csv(os.path.join(FEAT_DIR, "feature_correlations.csv"), index=False)
+    plot_feature_correlations(corrs)
+    plot_feature_correlations_heatmap(corrs)
+
     print(f"[bold green]Wrote[/bold green] data/features/game_features.parquet with {len(gf):,} rows")
     return gf

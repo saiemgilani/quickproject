@@ -27,9 +27,8 @@ targets:
 - home_points
 - away_points
 league_avg_points: 22.0
-home_field_points: 1.5
+home_field_points: 2.5
 rolling_window_weeks: 3
 ewm_alpha: 0.3
 min_plays_team_week: 20
-poisson_objective: true
 random_seed: 42

@@ -18,4 +18,4 @@ evaluate:
 	$(PY) -m src.cli evaluate
 
 clean:
-	rm -rf data/features/* data/predictions/* reports/*
+	rm -rf data/features/* data/predictions/* data/models/* reports/*
