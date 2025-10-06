@@ -10,7 +10,7 @@ from rich import print
 from scipy.stats import skellam
 from sklearn.metrics import brier_score_loss, mean_absolute_error, mean_squared_error
 from sklearn.model_selection import train_test_split
-from xgboost import XGBRegressor
+from xgboost import XGBClassifier, XGBRegressor
 
 FEAT_DIR = os.path.join("data", "features")
 PRED_DIR = os.path.join("data", "predictions")
@@ -57,7 +57,7 @@ def _feature_matrix(df: pd.DataFrame, feature_columns_selected: list[str]) -> Tu
     return X, y_home, y_away
 
 
-def _make_model(poisson: bool = True) -> XGBRegressor:
+def _make_regression_model(poisson: bool = True) -> XGBRegressor:
     """Creates and configures an XGBoost regression model for training.
 
     This function initializes an XGBRegressor with specified hyperparameters and sets the objective based on the poisson argument.
@@ -77,10 +77,34 @@ def _make_model(poisson: bool = True) -> XGBRegressor:
         random_state=RANDOM_SEED,
         reg_alpha=0.0,
         reg_lambda=1.0,
-        verbosity=1
+        verbosity=1,
     )
     params["objective"] = "count:poisson" if poisson else "reg:squarederror"
     return XGBRegressor(**params)
+
+
+def _make_classification_model() -> XGBClassifier:
+    """Creates and configures an XGBoost classification model for training.
+
+    This function initializes an XGBClassifier for binary classification (win/loss).
+
+    Returns:
+        XGBClassifier: The configured XGBoost classification model.
+    """
+    params = dict(
+        n_estimators=100,
+        learning_rate=0.03,
+        max_depth=4,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=RANDOM_SEED,
+        reg_alpha=0.0,
+        reg_lambda=1.0,
+        verbosity=1,
+        objective="binary:logistic",
+        eval_metric="logloss",
+    )
+    return XGBClassifier(**params)
 
 
 def _generate_shap_summary_plot(
@@ -118,9 +142,76 @@ def _generate_shap_summary_plot(
     # print(f"[bold blue]Wrote[/bold blue] SHAP summary plot to {out_path}")
 
 
+def walkforward_train_predict_classifier(
+    df: pd.DataFrame, feature_columns_selected: list[str], model_name: str, use_prior_seasons: bool = False
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Trains and predicts game win probability using a walk-forward classifier.
+
+    For each season, this function iterates week by week, training a model on all data up to the
+    current week and predicting on the current week's games. This prevents data leakage.
+
+    Args:
+        df (pd.DataFrame): The DataFrame containing game features and scores.
+        feature_columns_selected (list[str]): The list of selected feature columns to use for training.
+        model_name (str): The name of the model configuration, used for saving model files.
+        use_prior_seasons (bool): If True, includes all prior seasons in the training data for each week.
+
+    Returns:
+        Tuple[pd.DataFrame, pd.DataFrame]: A tuple containing:
+            - A DataFrame with win probability predictions for each game.
+            - A DataFrame with feature importances from the trained models.
+    """
+    preds = []
+    importances = []
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    df = df.copy()
+    df["home_win"] = (df["home_score"] > df["away_score"]).astype(int)
+
+    for season in sorted(df["season"].unique()):
+        sdf = df[df["season"] == season].copy()
+        for week in sorted(sdf["week"].unique()):
+            test = sdf[sdf["week"] == week].copy()
+            if test.empty:
+                continue
+
+            train = sdf[sdf["week"] < week]
+            if use_prior_seasons:
+                train_prior = df[df["season"] < season].copy()
+                train = pd.concat([train_prior, train], ignore_index=True)
+
+            if train.empty:
+                test["pred_home_wp"] = 0.53  # Neutral prior with home field advantage
+                preds.append(test)
+                continue
+
+            X_tr, _, _ = _feature_matrix(train, feature_columns_selected)
+            y_tr = train["home_win"]
+            X_te, _, _ = _feature_matrix(test, feature_columns_selected)
+
+            m = _make_classification_model()
+            m.fit(X_tr, y_tr)
+
+            if week == sdf["week"].max():
+                model_path = os.path.join(MODELS_DIR, f"{model_name}_{season}.pkl")
+                with open(model_path, "wb") as f:
+                    pickle.dump(m, f)
+                imp = pd.DataFrame(
+                    {"feature": X_tr.columns, "importance": m.feature_importances_, "model": "wp", "season": season}
+                )
+                importances.append(imp)
+
+            test["pred_home_wp"] = m.predict_proba(X_te)[:, 1]
+            preds.append(test)
+
+    out = pd.concat(preds, ignore_index=True)
+    imp_df = pd.concat(importances, ignore_index=True) if importances else pd.DataFrame()
+    out = out.sort_values(["season", "week", "game_id"]).reset_index(drop=True)
+    return out, imp_df
+
+
 def walkforward_train_predict(
     df: pd.DataFrame, feature_columns_selected: list[str], model_name: str, poisson: bool = True, use_prior_seasons: bool = False
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Trains and predicts game outcomes using a seasonal 80/20 split.
 
     For each season, this function splits the data into an 80% training set and a 20% test set,
@@ -135,18 +226,29 @@ def walkforward_train_predict(
         use_prior_seasons (bool): If True, includes all prior seasons in the training data for each week.
 
     Returns:
-        Tuple[pd.DataFrame, pd.DataFrame]: A tuple containing:
+        Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: A tuple containing:
             - A DataFrame with predictions for each game.
-            - A DataFrame with feature importances from all trained models.
+            - A DataFrame with feature importances from all team points models.
+            - A DataFrame with feature importances from the win probability model.
     """
     preds = []
     importances = []
     os.makedirs(MODELS_DIR, exist_ok=True)
+    df["home_win"] = (df["home_score"] > df["away_score"]).astype(int)
     for season in sorted(df["season"].unique()):
         sdf = df[df["season"] == season].copy()
 
         # Split season data into 80% train and 20% test, stratified by week
         train, test = train_test_split(sdf, test_size=0.4, random_state=RANDOM_SEED, stratify=sdf["week"])
+
+        if test.empty:
+            continue
+
+        if train.empty:
+            test["pred_home_wp"] = 0.53  # Neutral prior with home field advantage
+            preds.append(test)
+            continue
+
 
         if use_prior_seasons:
             train_prior = df[df["season"] < season].copy()
@@ -157,12 +259,17 @@ def walkforward_train_predict(
 
         X_tr, yh_tr, ya_tr = _feature_matrix(train, feature_columns_selected)
         X_te, _, _ = _feature_matrix(test, feature_columns_selected)
-        m_h = _make_model(poisson=poisson)
-        m_a = _make_model(poisson=poisson)
+        y_wp_tr = train["home_win"]
+        m_h = _make_regression_model(poisson=poisson)
+        m_a = _make_regression_model(poisson=poisson)
+        m_wp = _make_classification_model()
         m_h.fit(X_tr, yh_tr)
         _generate_shap_summary_plot(m_h, X_tr, model_name, season, "home")
         m_a.fit(X_tr, ya_tr)
         _generate_shap_summary_plot(m_a, X_tr, model_name, season, "away")
+
+        m_wp.fit(X_tr, y_wp_tr)
+        _generate_shap_summary_plot(m_wp, X_tr, "logistic_wp", season, "wp")
 
         # Save models
         model_h_path = os.path.join(MODELS_DIR, f"{model_name}_home_{season}.pkl")
@@ -173,6 +280,10 @@ def walkforward_train_predict(
         with open(model_a_path, "wb") as f:
             pickle.dump(m_a, f)
 
+        model_wp_path = os.path.join(MODELS_DIR, f"logistic_wp_{season}.pkl")
+        with open(model_wp_path, "wb") as f:
+            pickle.dump(m_wp, f)
+
         # Store feature importances
         imp_h = pd.DataFrame(
             {"feature": X_tr.columns, "importance": m_h.feature_importances_, "model": "home", "season": season}
@@ -180,11 +291,15 @@ def walkforward_train_predict(
         imp_a = pd.DataFrame(
             {"feature": X_tr.columns, "importance": m_a.feature_importances_, "model": "away", "season": season}
         )
+        imp_wp = pd.DataFrame(
+            {"feature": X_tr.columns, "importance": m_wp.feature_importances_, "model": "wp", "season": season}
+        )
         importances.extend([imp_h, imp_a])
 
         test = test.copy()
         test["pred_home_points"] = np.select([(test["week"]==1) & (~use_prior_seasons)], [22.0 + 2.5], default=np.clip(m_h.predict(X_te), 0, None))
         test["pred_away_points"] = np.select([(test["week"]==1) & (~use_prior_seasons)], [22.0], default=np.clip(m_a.predict(X_te), 0, None))
+        test["pred_home_wp"] = np.select([(test["week"]==1) & (~use_prior_seasons)], [0.53], default=m_wp.predict_proba(X_te)[:, 1])
         preds.append(test)
 
     if not preds:
@@ -195,12 +310,12 @@ def walkforward_train_predict(
     out["pred_margin_home"] = out["pred_home_points"] - out["pred_away_points"]
     lam_h = np.clip(out["pred_home_points"].values, 0.01, None)
     lam_a = np.clip(out["pred_away_points"].values, 0.01, None)
-    out["pred_home_wp"] = 1.0 - skellam.cdf(0, lam_h, lam_a) + 0.5 * skellam.pmf(0, lam_h, lam_a)
+    out["pred_home_wp_skellam"] = 1.0 - skellam.cdf(0, lam_h, lam_a) + 0.5 * skellam.pmf(0, lam_h, lam_a)
     out["home_win"] = (out["home_score"] > out["away_score"]).astype(int)
 
     imp_df = pd.concat(importances, ignore_index=True) if importances else pd.DataFrame()
     out = out.sort_values(["season", "week", "game_id"]).reset_index(drop=True)
-    return out, imp_df
+    return out, imp_df, imp_wp
 
 
 def evaluate_season(preds: pd.DataFrame) -> pd.DataFrame:
@@ -216,29 +331,34 @@ def evaluate_season(preds: pd.DataFrame) -> pd.DataFrame:
     """
     rows = []
     for season, sdf in preds.groupby("season"):
-        mae_home_margin = abs(sdf["actual_margin_home"] - sdf["pred_margin_home"]).mean()
-        mae_home = mean_absolute_error(sdf["home_score"], sdf["pred_home_points"])
-        mae_away = mean_absolute_error(sdf["away_score"], sdf["pred_away_points"])
-        rmse_home = mean_squared_error(sdf["home_score"], sdf["pred_home_points"])
-        rmse_away = mean_squared_error(sdf["away_score"], sdf["pred_away_points"])
-        margin_true = sdf["home_score"] - sdf["away_score"]
-        rmse_margin = mean_squared_error(margin_true, sdf["pred_margin_home"])
-        mae_margin = mean_absolute_error(margin_true, sdf["pred_margin_home"])
-        brier_score_loss_home_wp = brier_score_loss(sdf["home_win"], sdf["pred_home_wp"])
-        rows.append(
-            dict(
-                season=int(season),
-                mae_home_margin=mae_home_margin,
-                mae_home=mae_home,
-                mae_away=mae_away,
-                rmse_home=rmse_home,
-                rmse_away=rmse_away,
-                rmse_margin=rmse_margin,
-                mae_margin=mae_margin,
-                brier_score_loss_home_wp=brier_score_loss_home_wp,
-                n_games=len(sdf),
+        metrics = {
+            "season": int(season),
+            "n_games": len(sdf),
+        }
+        if "pred_home_points" in sdf.columns and "pred_away_points" in sdf.columns and "home_score" in sdf.columns:
+            sdf = sdf.copy()
+            sdf["actual_margin_home"] = sdf["home_score"] - sdf["away_score"]
+            sdf["pred_margin_home"] = sdf["pred_home_points"] - sdf["pred_away_points"]
+            metrics.update(
+                {
+                    "mae_home_margin": abs(sdf["actual_margin_home"] - sdf["pred_margin_home"]).mean(),
+                    "mae_home": mean_absolute_error(sdf["home_score"], sdf["pred_home_points"]),
+                    "mae_away": mean_absolute_error(sdf["away_score"], sdf["pred_away_points"]),
+                    "rmse_home": mean_squared_error(sdf["home_score"], sdf["pred_home_points"]),
+                    "rmse_away": mean_squared_error(sdf["away_score"], sdf["pred_away_points"]),
+                    "rmse_margin": mean_squared_error(sdf["actual_margin_home"], sdf["pred_margin_home"]),
+                    "mae_margin": mean_absolute_error(sdf["actual_margin_home"], sdf["pred_margin_home"]),
+                }
             )
-        )
+
+        if "pred_home_wp" in sdf.columns and "home_win" in sdf.columns:
+            metrics["brier_score_loss_home_wp"] = brier_score_loss(sdf["home_win"], sdf["pred_home_wp"])
+            metrics["log_loss_home_wp"] = -np.mean(
+                sdf["home_win"] * np.log(np.clip(sdf["pred_home_wp"], 1e-15, 1 - 1e-15))
+                + (1 - sdf["home_win"]) * np.log(np.clip(1 - sdf["pred_home_wp"], 1e-15, 1 - 1e-15))
+            )
+
+        rows.append(metrics)
     return pd.DataFrame(rows)
 
 
@@ -255,19 +375,34 @@ def evaluate_weeks(preds: pd.DataFrame) -> pd.DataFrame:
     """
     rows = []
     for (season, week), sdf in preds.groupby(["season", "week"]):
-        row = {
+        metrics = {
             "season": season,
             "week": week,
             "n_games": len(sdf),
-            "mae_home": mean_absolute_error(sdf["home_score"], sdf["pred_home_points"]),
-            "mae_away": mean_absolute_error(sdf["away_score"], sdf["pred_away_points"]),
-            "mae_margin": mean_absolute_error(sdf["actual_margin_home"], sdf["pred_margin_home"]),
-            "rmse_home": mean_squared_error(sdf["home_score"], sdf["pred_home_points"]),
-            "rmse_away": mean_squared_error(sdf["away_score"], sdf["pred_away_points"]),
-            "rmse_margin": mean_squared_error(sdf["actual_margin_home"], sdf["pred_margin_home"]),
-            "brier_score_loss_home_wp": brier_score_loss(sdf["home_win"], sdf["pred_home_wp"]),
         }
-        rows.append(row)
+        if "pred_home_points" in sdf.columns and "pred_away_points" in sdf.columns and "home_score" in sdf.columns:
+            sdf = sdf.copy()
+            sdf["actual_margin_home"] = sdf["home_score"] - sdf["away_score"]
+            sdf["pred_margin_home"] = sdf["pred_home_points"] - sdf["pred_away_points"]
+            metrics.update(
+                {
+                    "mae_home": mean_absolute_error(sdf["home_score"], sdf["pred_home_points"]),
+                    "mae_away": mean_absolute_error(sdf["away_score"], sdf["pred_away_points"]),
+                    "mae_margin": mean_absolute_error(sdf["actual_margin_home"], sdf["pred_margin_home"]),
+                    "rmse_home": mean_squared_error(sdf["home_score"], sdf["pred_home_points"]),
+                    "rmse_away": mean_squared_error(sdf["away_score"], sdf["pred_away_points"]),
+                    "rmse_margin": mean_squared_error(sdf["actual_margin_home"], sdf["pred_margin_home"]),
+                }
+            )
+
+        if "pred_home_wp" in sdf.columns and "home_win" in sdf.columns:
+            metrics["brier_score_loss_home_wp"] = brier_score_loss(sdf["home_win"], sdf["pred_home_wp"])
+            metrics["log_loss_home_wp"] = -np.mean(
+                sdf["home_win"] * np.log(np.clip(sdf["pred_home_wp"], 1e-15, 1 - 1e-15))
+                + (1 - sdf["home_win"]) * np.log(np.clip(1 - sdf["pred_home_wp"], 1e-15, 1 - 1e-15))
+            )
+
+        rows.append(metrics)
     return pd.DataFrame(rows)
 
 
@@ -358,22 +493,37 @@ def run() -> pd.DataFrame:
     df, df_slim = _load_features()
 
     models_to_run = {
-        "poisson": {"is_poisson": True, "use_prior_seasons": False},
-        "baseline_rmse": {"is_poisson": False, "use_prior_seasons": False},
-        "poisson_prior_seasons": {"is_poisson": True, "use_prior_seasons": True},
+        "poisson": {"type": "regression", "is_poisson": True, "use_prior_seasons": False},
+        "baseline_rmse": {"type": "regression", "is_poisson": False, "use_prior_seasons": False},
+        "poisson_prior_seasons": {"type": "regression", "is_poisson": True, "use_prior_seasons": True},
+        # "logistic_wp": {"type": "classification", "use_prior_seasons": True},
     }
     primary_preds = None
 
     for model_name, config in models_to_run.items():
-        is_poisson = config["is_poisson"]
+        model_type = config.get("type", "regression")
         use_prior = config["use_prior_seasons"]
         print(
-            f"[bold yellow]Running model:[/bold yellow] {model_name} (poisson={is_poisson}, use_prior_seasons={use_prior})"
+            f"[bold yellow]Running model:[/bold yellow] {model_name} (type={model_type}, use_prior_seasons={use_prior})"
         )
 
-        preds, importances = walkforward_train_predict(
-            df, feature_columns_selected=df_slim.columns.tolist(), model_name=model_name, poisson=is_poisson, use_prior_seasons=use_prior
+        # if model_type == "classification":
+        #     preds, importances = walkforward_train_predict_classifier(
+        #         df,
+        #         feature_columns_selected=df_slim.columns.tolist(),
+        #         model_name=model_name,
+        #         use_prior_seasons=use_prior,
+        #     )
+        # else:  # Default to regression
+        is_poisson = config["is_poisson"]
+        preds, importances, importances_wp = walkforward_train_predict(
+            df,
+            feature_columns_selected=df_slim.columns.tolist(),
+            model_name=model_name,
+            poisson=is_poisson,
+            use_prior_seasons=use_prior,
         )
+
         if model_name == "poisson":
             primary_preds = preds
 
@@ -389,6 +539,8 @@ def run() -> pd.DataFrame:
         calib.to_csv(os.path.join(PRED_DIR, f"calibration_data_wp_{model_name}.csv"), index=False)
 
         _save_feature_importances(importances, model_name)
+        if not importances_wp.empty:
+            _save_feature_importances(importances_wp, "logistic_wp")
         plot_feature_importances(importances.groupby("feature")["importance"].mean().reset_index(), model_name)
         print(f"[bold green]Wrote[/bold green] predictions and evaluation for {model_name} to data/predictions/")
 

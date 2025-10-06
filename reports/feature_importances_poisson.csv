@@ -1,6 +1,7 @@
 feature,importance
-home_off_epa_per_play,0.24312922
-home_def_epa_per_play,0.23606531
-away_def_epa_per_play,0.22936337
-away_off_epa_per_play,0.21801522
-away_off_pass_epa,0.073426865
+away_def_epa_per_play,0.26313555
+home_off_epa_per_play,0.20443729
+away_off_epa_per_play,0.19802532
+home_def_epa_per_play,0.1571671
+away_off_pass_epa,0.1079736
+home_def_pass_epa,0.069261156

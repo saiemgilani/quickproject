@@ -75,7 +75,7 @@ def make_report() -> str:
         divider_parts = ["|---:|"]
         for name in model_names:
             if name in model_evals:
-                header_parts.append(f" MAE Margin ({name}) | Brier ({name}) |")
+                header_parts.append(f" MAE Margin ({name}) | Brier Score WP ({name}) |")
                 divider_parts.append("---:|---:|")
         header = "".join(header_parts)
         divider = "".join(divider_parts)
@@ -115,6 +115,7 @@ This report summarizes the performance of multiple models:
 - **`Poisson`**: The primary model using an XGBoost regressor with a `count:poisson` objective, trained only on data from the current season (walk-forward). This adheres to the original "cold start" per-season design.
 - **`Baseline RMSE`**: An XGBoost regressor with a standard `reg:squarederror` objective, also trained only on data from the current season.
 - **`Poisson Prior Seasons`**: Same as the primary Poisson model, but trained on all available data from previous seasons plus the current season's data up to the prediction week. This tests the impact of using a larger, historical training set.
+- **`Logistic Regression WP`**: An XGBoost classifier with a `binary:logistic` objective, trained on the same features but predicting win probabilities directly.
 
 - **Performance**: The comparison table highlights the differences in key metrics. Comparing the `Poisson` and `Poisson Prior Seasons` models shows the impact of using historical data, which may improve performance in early weeks but could also introduce noise from outdated team dynamics.
 - **Feature Importance**: Feature importances for all models have been saved to the `reports/` directory. This allows for analysis of which factors are most influential for each modeling approach.
@@ -132,22 +133,22 @@ The current approach uses fixed hyperparameters. Future improvements could inclu
 
     season_lines = [
         f"# Model Performance Summary by Season ({primary_model_name.capitalize()})\n",
-        "| Season | Games | MAE Home Margin | MAE Home | MAE Away | RMSE Home | RMSE Away | RMSE Margin | MAE Margin | Brier Score WP |",
+        "| Season | MAE Home Margin | MAE Home | MAE Away | RMSE Home | RMSE Away | RMSE Margin | MAE Margin | Brier Score WP | LogLoss WP |",
         "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for _, r in seasons_df.iterrows():
         season_lines.append(
-            f"| {int(r['season'])} | {int(r['n_games'])} | {r['mae_margin']:.2f} | {r['mae_home']:.2f} | {r['mae_away']:.2f} | {r['rmse_home']:.2f} | {r['rmse_away']:.2f} | {r['rmse_margin']:.2f} | {r['mae_margin']:.2f} | {r['brier_score_loss_home_wp']:.3f} |"
+            f"| {int(r['season'])} | {r['mae_margin']:.2f} | {r['mae_home']:.2f} | {r['mae_away']:.2f} | {r['rmse_home']:.2f} | {r['rmse_away']:.2f} | {r['rmse_margin']:.2f} | {r['mae_margin']:.2f} | {r['brier_score_loss_home_wp']:.3f} | {r['log_loss_home_wp']:.3f} |"
         )
 
     week_lines = [
         f"# Model Performance Summary by Week ({primary_model_name.capitalize()})\n",
-        "| Season | Week | Games | MAE Home Margin | MAE Home | MAE Away | RMSE Home | RMSE Away | RMSE Margin | MAE Margin | Brier Score WP |",
+        "| Season | Week | MAE Home Margin | MAE Home | MAE Away | RMSE Home | RMSE Away | RMSE Margin | MAE Margin | Brier Score WP | LogLoss WP |",
         "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for _, r in weeks_df.iterrows():
         week_lines.append(
-            f"| {int(r['season'])} | {r['week']} | {int(r['n_games'])} | {r['mae_margin']:.2f} | {r['mae_home']:.2f} | {r['mae_away']:.2f} | {r['rmse_home']:.2f} | {r['rmse_away']:.2f} | {r['rmse_margin']:.2f} | {r['mae_margin']:.2f} | {r['brier_score_loss_home_wp']:.3f} |"
+            f"| {int(r['season'])} | {r['week']} | {r['mae_margin']:.2f} | {r['mae_home']:.2f} | {r['mae_away']:.2f} | {r['rmse_home']:.2f} | {r['rmse_away']:.2f} | {r['rmse_margin']:.2f} | {r['mae_margin']:.2f} | {r['brier_score_loss_home_wp']:.3f} | {r['log_loss_home_wp']:.3f} |"
         )
 
     # --- Assemble and Write Report ---

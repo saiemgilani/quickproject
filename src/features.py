@@ -367,7 +367,7 @@ def build_game_features(min_plays_team_week: int = 20) -> pd.DataFrame:
         g[num_cols] = g[num_cols].fillna(means)
         out.append(g)
     gf = pd.concat(out, ignore_index=True)
-    slim_gf, corrs = _auto_correlation_selection(gf, min_correlation_cutoff=0.35, max_features=5)
+    slim_gf, corrs = _auto_correlation_selection(gf, min_correlation_cutoff=0.35, max_features=6)
 
     os.makedirs(FEAT_DIR, exist_ok=True)
 
