@@ -11,6 +11,7 @@ from scipy.stats import skellam
 from sklearn.metrics import brier_score_loss, mean_absolute_error, mean_squared_error
 from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier, XGBRegressor
+from src.utils.odds import implied_odds
 
 FEAT_DIR = os.path.join("data", "features")
 PRED_DIR = os.path.join("data", "predictions")
@@ -71,7 +72,7 @@ def _make_regression_model(poisson: bool = True) -> XGBRegressor:
     params = dict(
         n_estimators=50,
         learning_rate=0.03,
-        max_depth=4,
+        max_depth=2,
         subsample=0.8,
         colsample_bytree=0.8,
         random_state=RANDOM_SEED,
@@ -92,7 +93,7 @@ def _make_classification_model() -> XGBClassifier:
         XGBClassifier: The configured XGBoost classification model.
     """
     params = dict(
-        n_estimators=100,
+        n_estimators=50,
         learning_rate=0.03,
         max_depth=4,
         subsample=0.8,
@@ -102,7 +103,7 @@ def _make_classification_model() -> XGBClassifier:
         reg_lambda=1.0,
         verbosity=1,
         objective="binary:logistic",
-        eval_metric="logloss",
+
     )
     return XGBClassifier(**params)
 
@@ -239,7 +240,7 @@ def walkforward_train_predict(
         sdf = df[df["season"] == season].copy()
 
         # Split season data into 80% train and 20% test, stratified by week
-        train, test = train_test_split(sdf, test_size=0.4, random_state=RANDOM_SEED, stratify=sdf["week"])
+        train, test = train_test_split(sdf, test_size=0.3, random_state=RANDOM_SEED, stratify=sdf["week"])
 
         if test.empty:
             continue
@@ -263,8 +264,10 @@ def walkforward_train_predict(
         m_h = _make_regression_model(poisson=poisson)
         m_a = _make_regression_model(poisson=poisson)
         m_wp = _make_classification_model()
+
         m_h.fit(X_tr, yh_tr)
         _generate_shap_summary_plot(m_h, X_tr, model_name, season, "home")
+
         m_a.fit(X_tr, ya_tr)
         _generate_shap_summary_plot(m_a, X_tr, model_name, season, "away")
 
@@ -313,6 +316,7 @@ def walkforward_train_predict(
     out["pred_home_wp_skellam"] = 1.0 - skellam.cdf(0, lam_h, lam_a) + 0.5 * skellam.pmf(0, lam_h, lam_a)
     out["home_win"] = (out["home_score"] > out["away_score"]).astype(int)
 
+    out["pred_home_margin_implied_by_wp"] = implied_odds(out["pred_home_wp"].tolist(), category="dec", method="naive", margin=0, normalize=False)
     imp_df = pd.concat(importances, ignore_index=True) if importances else pd.DataFrame()
     out = out.sort_values(["season", "week", "game_id"]).reset_index(drop=True)
     return out, imp_df, imp_wp
@@ -341,13 +345,12 @@ def evaluate_season(preds: pd.DataFrame) -> pd.DataFrame:
             sdf["pred_margin_home"] = sdf["pred_home_points"] - sdf["pred_away_points"]
             metrics.update(
                 {
-                    "mae_home_margin": abs(sdf["actual_margin_home"] - sdf["pred_margin_home"]).mean(),
+                    "mae_margin": abs(sdf["actual_margin_home"] - sdf["pred_margin_home"]).mean(),
                     "mae_home": mean_absolute_error(sdf["home_score"], sdf["pred_home_points"]),
                     "mae_away": mean_absolute_error(sdf["away_score"], sdf["pred_away_points"]),
+                    "rmse_margin": mean_squared_error(sdf["actual_margin_home"], sdf["pred_margin_home"]),
                     "rmse_home": mean_squared_error(sdf["home_score"], sdf["pred_home_points"]),
                     "rmse_away": mean_squared_error(sdf["away_score"], sdf["pred_away_points"]),
-                    "rmse_margin": mean_squared_error(sdf["actual_margin_home"], sdf["pred_margin_home"]),
-                    "mae_margin": mean_absolute_error(sdf["actual_margin_home"], sdf["pred_margin_home"]),
                 }
             )
 
@@ -357,6 +360,8 @@ def evaluate_season(preds: pd.DataFrame) -> pd.DataFrame:
                 sdf["home_win"] * np.log(np.clip(sdf["pred_home_wp"], 1e-15, 1 - 1e-15))
                 + (1 - sdf["home_win"]) * np.log(np.clip(1 - sdf["pred_home_wp"], 1e-15, 1 - 1e-15))
             )
+            metrics["mae_margin_implied_by_wp"] = mean_absolute_error(sdf["actual_margin_home"], sdf["pred_home_margin_implied_by_wp"])
+            metrics["rmse_margin_implied_by_wp"] = mean_squared_error(sdf["actual_margin_home"], sdf["pred_home_margin_implied_by_wp"])
 
         rows.append(metrics)
     return pd.DataFrame(rows)
@@ -401,6 +406,8 @@ def evaluate_weeks(preds: pd.DataFrame) -> pd.DataFrame:
                 sdf["home_win"] * np.log(np.clip(sdf["pred_home_wp"], 1e-15, 1 - 1e-15))
                 + (1 - sdf["home_win"]) * np.log(np.clip(1 - sdf["pred_home_wp"], 1e-15, 1 - 1e-15))
             )
+            metrics["mae_margin_implied_by_wp"] = mean_absolute_error(sdf["actual_margin_home"], sdf["pred_home_margin_implied_by_wp"])
+            metrics["rmse_margin_implied_by_wp"] = mean_squared_error(sdf["actual_margin_home"], sdf["pred_home_margin_implied_by_wp"])
 
         rows.append(metrics)
     return pd.DataFrame(rows)

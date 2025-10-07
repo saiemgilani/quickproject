@@ -81,6 +81,7 @@ Week 1 uses neutral priors: league-average points baseline (constant = 22 points
 │   ├── evaluate.py         # metrics & calibration
 │   └── utils/
 │       └── common.py       # helpers & constants
+│       └── odds.py         # odds conversion functions
 │── build_models.sh         # bash orchestration
 ├── Makefile                # make orchestration
 ├── Dockerfile              # docker image
@@ -123,13 +124,27 @@ See `reports/PERFORMANCE.md` for the latest model performance summary.
 
 ### Model Performance Summary by Season
 
-| Season | MAE Home Margin | MAE Home | MAE Away | RMSE Home | RMSE Away | RMSE Margin | MAE Margin | Brier Score WP | LogLoss WP |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 2020 | 6.80 | 5.72 | 6.18 | 54.22 | 58.31 | 83.17 | 6.80 | 0.065 | 0.228 |
-| 2021 | 6.47 | 6.08 | 5.44 | 57.37 | 45.43 | 76.79 | 6.47 | 0.048 | 0.185 |
-| 2022 | 4.95 | 4.75 | 5.11 | 40.28 | 40.63 | 40.56 | 4.95 | 0.078 | 0.266 |
-| 2023 | 6.51 | 6.10 | 5.07 | 66.92 | 41.45 | 77.13 | 6.51 | 0.097 | 0.310 |
-| 2024 | 6.40 | 5.88 | 5.15 | 54.57 | 39.97 | 67.95 | 6.40 | 0.077 | 0.259 |
+| Season | Model | MAE Margin | RMSE Margin | Brier Score WP | LogLoss WP | MAE Margin (WP-Implied) | RMSE Margin (WP-Implied) |
+|---:|:---|---:|---:|---:|---:|---:|---:|
+| 2020 | baseline_rmse | 4.93 | 50.19 | 0.086 | 0.319 | 12.02 | 246.70 |
+| 2020 | poisson | 6.75 | 81.89 | 0.086 | 0.319 | 12.02 | 246.70 |
+| 2020 | poisson_prior_seasons | 6.43 | 73.49 | 0.073 | 0.289 | 12.16 | 249.24 |
+| 2021 | baseline_rmse | 4.25 | 36.86 | 0.132 | 0.414 | 11.99 | 250.47 |
+| 2021 | poisson | 6.39 | 75.35 | 0.132 | 0.414 | 11.99 | 250.47 |
+| 2021 | poisson_prior_seasons | 6.38 | 79.28 | 0.078 | 0.288 | 12.45 | 260.81 |
+| 2022 | baseline_rmse | 4.18 | 28.03 | 0.080 | 0.300 | 10.95 | 188.26 |
+| 2022 | poisson | 6.11 | 56.71 | 0.080 | 0.300 | 10.95 | 188.26 |
+| 2022 | poisson_prior_seasons | 5.91 | 56.20 | 0.062 | 0.251 | 11.49 | 204.91 |
+| 2023 | baseline_rmse | 5.06 | 49.95 | 0.080 | 0.300 | 12.12 | 227.84 |
+| 2023 | poisson | 7.13 | 86.27 | 0.080 | 0.300 | 12.12 | 227.84 |
+| 2023 | poisson_prior_seasons | 6.82 | 75.49 | 0.054 | 0.235 | 12.80 | 251.35 |
+| 2024 | baseline_rmse | 5.44 | 56.05 | 0.078 | 0.300 | 12.97 | 293.10 |
+| 2024 | poisson | 7.73 | 105.59 | 0.078 | 0.300 | 12.97 | 293.10 |
+| 2024 | poisson_prior_seasons | 7.24 | 94.93 | 0.053 | 0.233 | 13.64 | 315.51 |
+
+* While the Poisson models have lower MAE/RMSE for points predictions, this low of a level of error is likely due to overfitting given the small data size per season/week. These results would be nearly 50% better than industry leaders like ESPN/FanDuel, which seems unlikely without more careful pipeline design, rigorous backtesting, and model validation.
+* The win probability models have reasonable Brier scores (~0.05–0.08) and log-loss values (~0.23–0.32), indicating decent calibration and discrimination ability.
+* The implied margin from win probability tends to have higher MAE/RMSE compared to the industry leader baselines, but given the simplicity of the models and lack of feature optimization, this is expected for a first iteration. Further tuning and feature engineering could improve these metrics, but the current results are not very overfitted given the metrics and calibration plots.
 
 ### Feature Importances
 

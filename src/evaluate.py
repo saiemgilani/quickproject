@@ -62,50 +62,43 @@ def make_report() -> str:
 
     # --- Model Comparison Section ---
     model_names = ["poisson", "baseline_rmse", "poisson_prior_seasons"]
-    model_evals = {}
+    all_model_evals = []
     for name in model_names:
         fpath = os.path.join(PRED_DIR, f"evaluation_seasons_{name}.csv")
         if os.path.exists(fpath):
-            model_evals[name] = pd.read_csv(fpath)
+            df = pd.read_csv(fpath)
+            df["model"] = name
+            all_model_evals.append(df)
 
     comparison_lines = []
-    if model_evals:
+    if all_model_evals:
+        comp_df = pd.concat(all_model_evals, ignore_index=True)
+        comp_df = comp_df.sort_values(["season", "model"]).reset_index(drop=True)
+
         # Build header and divider
-        header_parts = ["| Season |"]
-        divider_parts = ["|---:|"]
-        for name in model_names:
-            if name in model_evals:
-                header_parts.append(f" MAE Margin ({name}) | Brier Score WP ({name}) |")
-                divider_parts.append("---:|---:|")
-        header = "".join(header_parts)
-        divider = "".join(divider_parts)
+        header = "| Season | Model | MAE Margin | RMSE Margin | Brier Score WP | LogLoss WP | MAE Margin (WP-Implied) | RMSE Margin (WP-Implied) |"
+        divider = "|---:|:---|---:|---:|---:|---:|---:|---:|"
         comparison_lines.extend(["# Model Comparison\n", header, divider])
 
-        # Merge all available dataframes to create a comprehensive comparison table
-        all_seasons = sorted(list(set(s for df in model_evals.values() for s in df["season"])))
-        comp_df = pd.DataFrame({"season": all_seasons})
-        for name, df in model_evals.items():
-            df_to_merge = df[["season", "mae_margin", "brier_score_loss_home_wp"]].rename(
-                columns={
-                    "mae_margin": f"mae_margin_{name}",
-                    "brier_score_loss_home_wp": f"brier_score_loss_home_wp_{name}",
-                }
-            )
-            comp_df = comp_df.merge(df_to_merge, on="season", how="left")
-
-        # Build rows with NaN handling
+        # Build rows
         for _, r in comp_df.iterrows():
-            row_parts = [f"| {int(r['season'])} |"]
-            for name in model_names:
-                if name in model_evals:
-                    mae_val = r.get(f"mae_margin_{name}")
-                    brier_val = r.get(f"brier_score_loss_home_wp_{name}")
+            # Use .get() to handle missing columns gracefully (e.g., logistic_wp won't have mae_margin)
+            mae_val = r.get("mae_margin")
+            rmse_val = r.get("rmse_margin")
+            brier_val = r.get("brier_score_loss_home_wp")
+            logloss_val = r.get("log_loss_home_wp")
+            mae_implied_val = r.get("mae_margin_implied_by_wp")
+            rmse_implied_val = r.get("rmse_margin_implied_by_wp")
 
-                    mae_str = f"{mae_val:.2f}" if pd.notna(mae_val) else "N/A"
-                    brier_str = f"{brier_val:.3f}" if pd.notna(brier_val) else "N/A"
+            mae_str = f"{mae_val:.2f}" if pd.notna(mae_val) else "N/A"
+            rmse_str = f"{rmse_val:.2f}" if pd.notna(rmse_val) else "N/A"
+            brier_str = f"{brier_val:.3f}" if pd.notna(brier_val) else "N/A"
+            logloss_str = f"{logloss_val:.3f}" if pd.notna(logloss_val) else "N/A"
+            mae_implied_str = f"{mae_implied_val:.2f}" if pd.notna(mae_implied_val) else "N/A"
+            rmse_implied_str = f"{rmse_implied_val:.2f}" if pd.notna(rmse_implied_val) else "N/A"
 
-                    row_parts.append(f" {mae_str} | {brier_str} |")
-            comparison_lines.append("".join(row_parts))
+            row = f"| {int(r['season'])} | {r['model']} | {mae_str} | {rmse_str} | {brier_str} | {logloss_str} | {mae_implied_str} | {rmse_implied_str} |"
+            comparison_lines.append(row)
 
     # --- Analysis and Discussion Section ---
     discussion = """
@@ -115,7 +108,7 @@ This report summarizes the performance of multiple models:
 - **`Poisson`**: The primary model using an XGBoost regressor with a `count:poisson` objective, trained only on data from the current season (walk-forward). This adheres to the original "cold start" per-season design.
 - **`Baseline RMSE`**: An XGBoost regressor with a standard `reg:squarederror` objective, also trained only on data from the current season.
 - **`Poisson Prior Seasons`**: Same as the primary Poisson model, but trained on all available data from previous seasons plus the current season's data up to the prediction week. This tests the impact of using a larger, historical training set.
-- **`Logistic Regression WP`**: An XGBoost classifier with a `binary:logistic` objective, trained on the same features but predicting win probabilities directly.
+- **`Logistic Regression WP`**: An XGBoost classifier with a `binary:logistic` objective, trained on the same features but predicting win probabilities directly. These predicted win probabilities are then converted to point margins using the implied odds method.
 
 - **Performance**: The comparison table highlights the differences in key metrics. Comparing the `Poisson` and `Poisson Prior Seasons` models shows the impact of using historical data, which may improve performance in early weeks but could also introduce noise from outdated team dynamics.
 - **Feature Importance**: Feature importances for all models have been saved to the `reports/` directory. This allows for analysis of which factors are most influential for each modeling approach.
@@ -133,22 +126,22 @@ The current approach uses fixed hyperparameters. Future improvements could inclu
 
     season_lines = [
         f"# Model Performance Summary by Season ({primary_model_name.capitalize()})\n",
-        "| Season | MAE Home Margin | MAE Home | MAE Away | RMSE Home | RMSE Away | RMSE Margin | MAE Margin | Brier Score WP | LogLoss WP |",
-        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Season | MAE Margin | MAE Home | MAE Away | RMSE Margin | RMSE Home | RMSE Away | Brier Score WP | LogLoss WP | MAE Margin (WP-Implied) | RMSE Margin (WP-Implied) |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for _, r in seasons_df.iterrows():
         season_lines.append(
-            f"| {int(r['season'])} | {r['mae_margin']:.2f} | {r['mae_home']:.2f} | {r['mae_away']:.2f} | {r['rmse_home']:.2f} | {r['rmse_away']:.2f} | {r['rmse_margin']:.2f} | {r['mae_margin']:.2f} | {r['brier_score_loss_home_wp']:.3f} | {r['log_loss_home_wp']:.3f} |"
+            f"| {int(r['season'])} | {r['mae_margin']:.2f} | {r['mae_home']:.2f} | {r['mae_away']:.2f} | {r['rmse_margin']:.2f} | {r['rmse_home']:.2f} | {r['rmse_away']:.2f} | {r['brier_score_loss_home_wp']:.3f} | {r['log_loss_home_wp']:.3f} | {r['mae_margin_implied_by_wp']:.2f} | {r['rmse_margin_implied_by_wp']:.2f} |"
         )
 
     week_lines = [
         f"# Model Performance Summary by Week ({primary_model_name.capitalize()})\n",
-        "| Season | Week | MAE Home Margin | MAE Home | MAE Away | RMSE Home | RMSE Away | RMSE Margin | MAE Margin | Brier Score WP | LogLoss WP |",
-        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Season | Week | MAE Margin | MAE Home | MAE Away | RMSE Margin | RMSE Home | RMSE Away | Brier Score WP | LogLoss WP | MAE Margin (WP-Implied) | RMSE Margin (WP-Implied) |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for _, r in weeks_df.iterrows():
         week_lines.append(
-            f"| {int(r['season'])} | {r['week']} | {r['mae_margin']:.2f} | {r['mae_home']:.2f} | {r['mae_away']:.2f} | {r['rmse_home']:.2f} | {r['rmse_away']:.2f} | {r['rmse_margin']:.2f} | {r['mae_margin']:.2f} | {r['brier_score_loss_home_wp']:.3f} | {r['log_loss_home_wp']:.3f} |"
+            f"| {int(r['season'])} | {r['week']} | {r['mae_margin']:.2f} | {r['mae_home']:.2f} | {r['mae_away']:.2f} | {r['rmse_margin']:.2f} | {r['rmse_home']:.2f} | {r['rmse_away']:.2f} | {r['brier_score_loss_home_wp']:.3f} | {r['log_loss_home_wp']:.3f} | {r['mae_margin_implied_by_wp']:.2f} | {r['rmse_margin_implied_by_wp']:.2f} |"
         )
 
     # --- Assemble and Write Report ---
